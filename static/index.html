@@ -2501,14 +2501,23 @@
 
         // Query Management
         function addNewQuery() {
+            // Save current query state before switching to new query
+            if (state.queries.length > 0) {
+                saveCurrentQueryState();
+            }
+
+            // Inherit compartments and regions from current selection for convenience
+            const inheritedCompartments = state.selectedCompartments.map(c => ({...c}));
+            const inheritedRegions = [...state.selectedRegions];
+
             const queryIndex = state.queries.length;
             const query = {
                 id: `query-${Date.now()}`,
                 name: `Query ${queryIndex + 1}`,
                 mql: '',
                 compartmentId: '',           // For advanced mode backward compat
-                compartmentIds: [],          // For multi-select mode
-                regions: [],                 // Selected regions for this query
+                compartmentIds: inheritedCompartments,  // Inherit current compartments
+                regions: inheritedRegions,              // Inherit current regions
                 namespace: '',
                 isAdvanced: false
             };
@@ -2666,8 +2675,8 @@
                     renderSelectedCompartmentsChips();
                     renderCompartmentPickerOptions();
 
-                    // Load namespaces from first compartment
-                    loadNamespacesForCompartment(state.selectedCompartments[0].id).then(() => {
+                    // Load namespaces from ALL selected compartments
+                    loadNamespacesForAllCompartments().then(() => {
                         document.getElementById('namespaceSelect').value = query.namespace || '';
                         if (query.namespace) {
                             onNamespaceChange().then(() => {
@@ -2924,6 +2933,14 @@
                     const regions = queryRegions.length > 0
                         ? queryRegions
                         : (state.currentRegion ? [state.currentRegion] : []);
+
+                    // Log query details for debugging
+                    console.log(`Executing query "${query.name}":`, {
+                        regions: regions,
+                        compartments: compartmentIds,
+                        namespace: query.namespace,
+                        mql: query.mql
+                    });
 
                     try {
                         const response = await fetch('/api/query-unified', {
