@@ -6,6 +6,8 @@ A tool for querying and visualizing Oracle Cloud Infrastructure (OCI) Monitoring
 ![Python 3.8+](https://img.shields.io/badge/Python-3.8+-blue)
 ![Flask](https://img.shields.io/badge/Flask-2.0+-green)
 
+> **⚠️ Disclaimer**: This is **demo code** created to showcase Oracle Cloud Infrastructure Observability & Management (O&M) capabilities. This is **not official Oracle Corporation software**. The purpose of this project is to demonstrate different use cases and integration patterns with OCI Monitoring services. Use at your own discretion.
+
 ## Features
 
 - **Web UI** - Interactive dashboard with OCI Redwood design theme
@@ -19,12 +21,20 @@ A tool for querying and visualizing Oracle Cloud Infrastructure (OCI) Monitoring
 ### Web Interface Features
 
 - **Query Builder UI**: Similar to OCI Console's metric explorer
+  - **Multi-Compartment Selection** - Select multiple compartments for unified monitoring
+  - **Multi-Region Support** - Query metrics across multiple OCI regions simultaneously
   - **Searchable Compartment Selector** - Type to filter compartments with hierarchical view
   - Select namespace, metric, interval, and statistic
   - **Dimension Filtering** - Filter metrics by dimension name/value (like OCI Console)
   - Resource group filtering
   - Aggregate metric streams option
   - Advanced mode for raw MQL queries
+
+- **Unified Monitoring Dashboard**:
+  - Query the same metric across multiple compartments and regions
+  - Results labeled with source compartment and region
+  - Automatic aggregation of cross-region data
+  - Partial failure handling - see successful results even if some regions fail
 
 - **Multiple Queries**: Add and manage multiple queries simultaneously
 
@@ -84,6 +94,25 @@ Export all charts as a professional PDF report:
 - Page numbers for easy navigation
 
 ![PDF Export](images/3.png)
+
+### Multi-Compartment & Multi-Region Selection
+Query metrics across multiple compartments and regions simultaneously:
+- **Chip-based multi-select** - Click to add compartments/regions, X to remove
+- **Unified namespace loading** - Namespaces aggregated from all selected compartments
+- **Per-region feedback** - See how many series returned from each region
+- **Cross-region visualization** - All data combined in single chart with source labels
+
+![Multi-Compartment Selection](images/4-multicompartment.png)
+
+### Complete Multi-Region Query View
+Full workflow showing multi-region queries with results:
+- Multiple queries running simultaneously (Query 1: CPU, Query 2: Memory)
+- Three regions selected (uk-london-1, us-ashburn-1, eu-frankfurt-1)
+- Dimension filtering by resourceDisplayName
+- Interactive chart with tooltip showing values across instances
+- Export options for PNG, CSV, and PDF
+
+![Multi-Region Query Results](images/5.png)
 
 ### Searchable Compartment Selector
 Type to instantly filter compartments:
@@ -419,6 +448,7 @@ The Flask backend provides the following REST endpoints:
 |----------|--------|-------------|
 | `/api/auth-info` | GET | Get current authentication info |
 | `/api/compartments` | GET | List all accessible compartments |
+| `/api/regions` | GET | List subscribed OCI regions |
 | `/api/namespaces` | GET | List metric namespaces in a compartment |
 | `/api/resource-groups` | GET | List resource groups in a namespace |
 | `/api/metrics` | GET | List metrics in a namespace |
@@ -426,8 +456,48 @@ The Flask backend provides the following REST endpoints:
 | `/api/dimension-values` | GET | List values for a specific dimension |
 | `/api/query` | POST | Execute a single metric query |
 | `/api/query-multiple` | POST | Execute multiple queries |
+| `/api/query-unified` | POST | Execute queries across multiple regions/compartments |
 | `/api/query-options` | GET | Get available statistics and intervals |
 | `/api/common-namespaces` | GET | Get common namespaces with descriptions |
+
+### Multi-Region/Multi-Compartment Query API
+
+The `/api/query-unified` endpoint enables querying metrics across multiple regions and compartments simultaneously:
+
+```bash
+# Query CPU across two regions and two compartments
+curl -X POST "http://localhost:8080/api/query-unified" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "regions": ["us-ashburn-1", "us-phoenix-1"],
+    "compartment_ids": ["ocid1.compartment.oc1..aaa", "ocid1.compartment.oc1..bbb"],
+    "namespace": "oci_computeagent",
+    "query": "CpuUtilization[1h].mean()",
+    "start_time": "2024-01-01T00:00:00Z",
+    "end_time": "2024-01-02T00:00:00Z"
+  }'
+```
+
+Response includes results from each region/compartment combination with source metadata:
+```json
+{
+  "results": [
+    {
+      "region": "us-ashburn-1",
+      "compartment_id": "ocid1.compartment...",
+      "compartment_name": "Production",
+      "metric_data": [...]
+    }
+  ],
+  "errors": [],
+  "metadata": {
+    "total_regions": 2,
+    "total_compartments": 2,
+    "successful_queries": 4,
+    "failed_queries": 0
+  }
+}
+```
 
 ### Dimension API Examples
 
@@ -488,6 +558,21 @@ metricreport/
 - The gap detection uses 2.5x the median data interval as the threshold
 - Small dots on the chart indicate actual data points
 
+### Multi-region query returns no data
+- **New instances**: OCI monitoring takes 5-10 minutes to start collecting metrics after instance launch
+- **Check regions**: Toast message shows which regions were queried (e.g., "Series per region: us-ashburn-1: 5, uk-london-1: 0")
+- **Check compartments**: Ensure instances are in the selected compartments
+- **Check namespace**: `oci_computeagent` requires the monitoring agent running on instances
+- **Browser console**: Press F12 → Console tab to see detailed query logs including:
+  - Regions and compartments being queried
+  - Time range being used
+  - Full API response with any errors
+
+### Namespace dropdown shows "No namespaces found"
+- Ensure the selected compartments contain OCI resources that emit metrics
+- Different resource types emit to different namespaces (compute → `oci_computeagent`, databases → `oci_autonomous_database`, etc.)
+- Namespaces are now aggregated from ALL selected compartments
+
 ### Compartment search not working
 - Wait for compartments to fully load (check the loading indicator)
 - Try clearing the input and typing again
@@ -509,15 +594,41 @@ metricreport/
 - Safari 13+
 - Edge 80+
 
-## License
+## License & Disclaimer
 
-This project is provided as-is for educational and internal use.
+This project is **demo code** provided as-is for educational purposes and to showcase OCI Observability & Management capabilities. This is **not official Oracle Corporation software** and is not supported by Oracle.
+
+Use at your own risk. The authors are not responsible for any issues arising from the use of this code in production environments.
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ## Changelog
+
+### v1.4.1
+- **Bug Fix**: Fixed metric name dropdown not populating after namespace selection
+  - Functions now correctly read from multi-select compartment state
+- **Bug Fix**: Namespace loading now aggregates from ALL selected compartments
+  - Previously only loaded from first compartment, missing namespaces if instances were elsewhere
+- **Bug Fix**: Fixed edge case where empty region strings could be passed to API
+- **Enhancement**: Added per-region result breakdown in toast messages
+  - Shows "Series per region: us-ashburn-1: 5, uk-london-1: 3" after query execution
+- **Enhancement**: Added "no data" warning with diagnostic suggestions
+- **Enhancement**: Added browser console logging for query debugging
+- **Enhancement**: Specific error messages for missing required fields
+- **Enhancement**: Backend logging shows region/compartment query breakdown
+
+### v1.4.0
+- **Multi-Compartment Selection** - Select multiple compartments for unified monitoring
+- **Multi-Region Support** - Query metrics across multiple OCI regions simultaneously
+- **Unified Monitoring Dashboard** - Aggregate data from multiple sources with source labeling
+- New `/api/regions` endpoint to list subscribed OCI regions
+- New `/api/query-unified` endpoint for cross-region/cross-compartment queries
+- Chip-based multi-select UI for compartments and regions
+- Results labeled with source region and compartment name
+- Partial failure handling - successful results shown even if some regions fail
+- Backend `OCIRegionClientManager` for caching clients per region
 
 ### v1.3.0
 - Added gap detection in charts - missing data shown as gaps instead of connected lines

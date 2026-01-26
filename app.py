@@ -534,8 +534,110 @@ class OCIMonitoringClient:
             raise
 
 
-# Global OCI client instance
+# Global OCI client instance (kept for backward compatibility)
 oci_client = None
+
+# Compartment name cache for result labeling
+_compartment_cache: Dict[str, Dict] = {}
+
+
+def get_compartment_name(compartment_id: str) -> str:
+    """Get compartment name from cache."""
+    if compartment_id in _compartment_cache:
+        return _compartment_cache[compartment_id].get('name', compartment_id)
+    return compartment_id
+
+
+def populate_compartment_cache(compartments: List[Dict]):
+    """Populate compartment cache from API response."""
+    global _compartment_cache
+    for comp in compartments:
+        _compartment_cache[comp['id']] = comp
+
+
+class OCIRegionClientManager:
+    """
+    Manages OCI monitoring clients across multiple regions.
+
+    Creates and caches clients per region to enable cross-region queries.
+    """
+
+    def __init__(self, config_file: str = "~/.oci/config", profile: str = "DEFAULT",
+                 auth_type: AuthType = None):
+        self.config_file = config_file
+        self.profile = profile
+        self.auth_type = auth_type or detect_auth_type()
+        self._clients: Dict[str, OCIMonitoringClient] = {}
+        self._base_config, self._signer = get_signer(self.auth_type, config_file, profile)
+        self._default_region = self._base_config.get("region", "us-ashburn-1")
+        self._tenancy_id = self._base_config.get("tenancy")
+
+    def get_client(self, region: str = None) -> OCIMonitoringClient:
+        """Get or create a client for a specific region."""
+        region = region or self._default_region
+        if region not in self._clients:
+            self._clients[region] = OCIMonitoringClient(
+                config_file=self.config_file,
+                profile=self.profile,
+                auth_type=self.auth_type,
+                region=region
+            )
+        return self._clients[region]
+
+    def get_default_region(self) -> str:
+        """Get the default region from config."""
+        return self._default_region
+
+    def get_available_regions(self) -> List[str]:
+        """Get list of subscribed OCI regions."""
+        try:
+            # Use identity client to list subscribed regions
+            if self._signer:
+                identity_client = oci.identity.IdentityClient(
+                    self._base_config, signer=self._signer
+                )
+            else:
+                identity_client = oci.identity.IdentityClient(self._base_config)
+
+            regions = identity_client.list_region_subscriptions(
+                tenancy_id=self._tenancy_id
+            ).data
+
+            return sorted([r.region_name for r in regions if r.status == "READY"])
+        except Exception as e:
+            logger.error(f"Error listing regions: {e}")
+            # Return default region as fallback
+            return [self._default_region]
+
+
+# Global region client manager
+_region_manager = None
+
+
+def get_region_manager() -> OCIRegionClientManager:
+    """Get or create the region client manager."""
+    global _region_manager
+    if _region_manager is None:
+        config_file = os.environ.get("OCI_CONFIG_FILE", "~/.oci/config")
+        profile = os.environ.get("OCI_CONFIG_PROFILE", "DEFAULT")
+
+        auth_type_str = os.environ.get("OCI_AUTH_TYPE", "").lower()
+        auth_type = None
+        if auth_type_str == "instance_principal":
+            auth_type = AuthType.INSTANCE_PRINCIPAL
+        elif auth_type_str == "resource_principal":
+            auth_type = AuthType.RESOURCE_PRINCIPAL
+        elif auth_type_str == "security_token":
+            auth_type = AuthType.SECURITY_TOKEN
+        elif auth_type_str == "config_file":
+            auth_type = AuthType.CONFIG_FILE
+
+        _region_manager = OCIRegionClientManager(
+            config_file=config_file,
+            profile=profile,
+            auth_type=auth_type
+        )
+    return _region_manager
 
 
 def get_oci_client() -> OCIMonitoringClient:
@@ -597,9 +699,26 @@ def api_list_compartments():
     try:
         client = get_oci_client()
         compartments = client.list_compartments()
+        # Populate compartment cache for result labeling
+        populate_compartment_cache(compartments)
         return jsonify({"compartments": compartments})
     except Exception as e:
         logger.error(f"API error listing compartments: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/regions', methods=['GET'])
+def api_list_regions():
+    """List all subscribed OCI regions."""
+    try:
+        manager = get_region_manager()
+        regions = manager.get_available_regions()
+        return jsonify({
+            "regions": regions,
+            "current_region": manager.get_default_region()
+        })
+    except Exception as e:
+        logger.error(f"API error listing regions: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -788,6 +907,133 @@ def api_query_multiple():
     return jsonify({
         "results": results,
         "errors": errors
+    })
+
+
+@app.route('/api/query-unified', methods=['POST'])
+def api_query_unified():
+    """
+    Execute queries across multiple regions and compartments.
+
+    This endpoint enables unified monitoring dashboards by querying the same
+    metric across multiple regions and compartments simultaneously.
+
+    Request body:
+    {
+        "regions": ["us-ashburn-1", "us-phoenix-1"],  // Optional, defaults to current region
+        "compartment_ids": ["ocid1...", "ocid2..."],  // Required, at least one
+        "namespace": "oci_computeagent",
+        "query": "CpuUtilization[1h].mean()",
+        "start_time": "2024-01-01T00:00:00Z",
+        "end_time": "2024-01-02T00:00:00Z",
+        "resolution": "1h"  // Optional
+    }
+    """
+    data = request.json
+
+    # Validate required fields
+    required_fields = ['compartment_ids', 'namespace', 'query', 'start_time', 'end_time']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({"error": f"{field} is required"}), 400
+
+    compartment_ids = data.get('compartment_ids', [])
+    if not compartment_ids:
+        return jsonify({"error": "At least one compartment_id is required"}), 400
+
+    # Get regions - default to current region if not specified
+    manager = get_region_manager()
+    regions = data.get('regions', [])
+    # Filter out empty/None values and fallback to default if no valid regions
+    regions = [r for r in regions if r]
+    if not regions:
+        regions = [manager.get_default_region()]
+
+    namespace = data['namespace']
+    query = data['query']
+    resolution = data.get('resolution')
+
+    try:
+        start_time = date_parser.parse(data['start_time'])
+        end_time = date_parser.parse(data['end_time'])
+    except Exception as e:
+        return jsonify({"error": f"Invalid date format: {e}"}), 400
+
+    results = []
+    errors = []
+
+    logger.info(f"Unified query: {len(regions)} regions x {len(compartment_ids)} compartments = {len(regions) * len(compartment_ids)} queries")
+    logger.info(f"Regions: {regions}")
+
+    # Query each region/compartment combination
+    for region in regions:
+        try:
+            client = manager.get_client(region)
+        except Exception as e:
+            # Region not available
+            for comp_id in compartment_ids:
+                errors.append({
+                    "region": region,
+                    "compartment_id": comp_id,
+                    "error": f"Failed to connect to region {region}: {str(e)}"
+                })
+            continue
+
+        for compartment_id in compartment_ids:
+            try:
+                result = client.query_metrics(
+                    compartment_id=compartment_id,
+                    namespace=namespace,
+                    query=query,
+                    start_time=start_time,
+                    end_time=end_time,
+                    resolution=resolution
+                )
+
+                # Get compartment name for labeling
+                compartment_name = get_compartment_name(compartment_id)
+
+                # Add source metadata to each metric series
+                for metric in result.get('metric_data', []):
+                    metric['_source'] = {
+                        'region': region,
+                        'compartment_id': compartment_id,
+                        'compartment_name': compartment_name
+                    }
+                    # Enhance label with source info
+                    original_label = metric.get('label', metric.get('name', 'Unknown'))
+                    metric['label'] = f"{original_label} [{region}] ({compartment_name})"
+                    metric['short_label'] = original_label
+
+                metric_count = len(result.get('metric_data', []))
+                logger.info(f"Region {region}, compartment {compartment_name}: {metric_count} metric series")
+
+                results.append({
+                    'region': region,
+                    'compartment_id': compartment_id,
+                    'compartment_name': compartment_name,
+                    **result
+                })
+
+            except Exception as e:
+                logger.error(f"Error querying {region}/{compartment_id}: {e}")
+                errors.append({
+                    "region": region,
+                    "compartment_id": compartment_id,
+                    "compartment_name": get_compartment_name(compartment_id),
+                    "error": str(e)
+                })
+
+    return jsonify({
+        "results": results,
+        "errors": errors,
+        "metadata": {
+            "total_regions": len(regions),
+            "total_compartments": len(compartment_ids),
+            "total_queries": len(regions) * len(compartment_ids),
+            "successful_queries": len(results),
+            "failed_queries": len(errors)
+        }
     })
 
 
