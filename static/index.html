@@ -1459,7 +1459,7 @@
                                             <div id="selectedCompartmentsChips">
                                                 <span class="empty-placeholder">Click to select compartments...</span>
                                             </div>
-                                            <button type="button" class="add-selection-btn">+ Add</button>
+                                            <button type="button" class="add-selection-btn" tabindex="-1">+ Add</button>
                                         </div>
                                         <div class="multi-select-dropdown" id="compartmentPickerDropdown">
                                             <div class="multi-select-search">
@@ -1479,7 +1479,7 @@
                                             <div id="selectedRegionsChips">
                                                 <span class="empty-placeholder">Click to select regions...</span>
                                             </div>
-                                            <button type="button" class="add-selection-btn">+ Add</button>
+                                            <button type="button" class="add-selection-btn" tabindex="-1">+ Add</button>
                                         </div>
                                         <div class="multi-select-dropdown" id="regionPickerDropdown">
                                             <div id="regionPickerOptions">
@@ -1798,6 +1798,7 @@
         // Multi-Select Compartment Functions
         function openCompartmentPicker(event) {
             event.stopPropagation();
+            event.preventDefault();
             // Close region picker if open
             document.getElementById('regionPickerDropdown')?.classList.remove('open');
 
@@ -1807,7 +1808,10 @@
 
             if (!isOpen) {
                 setTimeout(() => {
-                    document.getElementById('compartmentSearchInput')?.focus();
+                    const searchInput = document.getElementById('compartmentSearchInput');
+                    if (searchInput) {
+                        searchInput.focus({ preventScroll: true });
+                    }
                 }, 50);
             }
         }
@@ -1982,6 +1986,7 @@
         // Multi-Select Region Functions
         function openRegionPicker(event) {
             event.stopPropagation();
+            event.preventDefault();
             // Close compartment picker if open
             document.getElementById('compartmentPickerDropdown')?.classList.remove('open');
 

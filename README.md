@@ -8,6 +8,21 @@ A tool for querying and visualizing Oracle Cloud Infrastructure (OCI) Monitoring
 
 > **⚠️ Disclaimer**: This is **demo code** created to showcase Oracle Cloud Infrastructure Observability & Management (O&M) capabilities. This is **not official Oracle Corporation software**. The purpose of this project is to demonstrate different use cases and integration patterns with OCI Monitoring services. Use at your own discretion.
 
+## How It Works
+
+| Layer | Technology | Purpose |
+|-------|------------|---------|
+| **Data Source** | OCI Monitoring API | Provides metric data via MQL queries |
+| **Backend** | Python + Flask + OCI SDK | REST API server that fetches data from OCI |
+| **Frontend** | Vanilla JS + Chart.js | Single-page app with interactive visualizations |
+| **Export** | html2canvas + jsPDF | Generates PNG screenshots and PDF reports |
+
+```
+Browser (Chart.js UI) ←→ Flask API (app.py) ←→ OCI Monitoring API
+```
+
+📖 **For detailed architecture diagrams and data flow explanations, see [ARCHITECTURE.md](ARCHITECTURE.md)**
+
 ## Features
 
 - **Web UI** - Interactive dashboard with OCI Redwood design theme
@@ -526,8 +541,10 @@ metricreport/
 ├── run.sh                  # Startup script with venv setup
 ├── cloudshell_report.sh    # CloudShell wrapper script
 ├── static/
-│   └── index.html          # Single-page web application
-└── README.md               # This file
+│   └── index.html          # Single-page web application (JS + CSS + HTML)
+├── images/                 # Screenshots for documentation
+├── README.md               # User guide & installation instructions
+└── ARCHITECTURE.md         # System architecture & data flow diagrams
 ```
 
 ## Troubleshooting
